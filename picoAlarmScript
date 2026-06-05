@@ -1,0 +1,216 @@
+from machine import I2C, Pin, PWM
+import utime
+import network
+import ntptime
+from pico_i2c_lcd import I2cLcd
+
+# --- WiFi Credentials ---
+WIFI_SSID     = "TPDungeon"
+WIFI_PASSWORD = "mystery10"
+
+# --- UTC offset for South Africa (SAST = UTC+2) ---
+UTC_OFFSET = 2 * 3600
+
+# --- I2C for LCD only ---
+i2c1 = I2C(1, sda=Pin(2), scl=Pin(3), freq=100000)
+lcd  = I2cLcd(i2c1, 0x27, 2, 16)
+
+# --- Buttons ---
+btn_mode = Pin(10, Pin.IN, Pin.PULL_UP)  # Physical Pin 14
+btn_up   = Pin(7,  Pin.IN, Pin.PULL_UP)  # Physical Pin 10
+btn_down = Pin(8,  Pin.IN, Pin.PULL_UP)  # Physical Pin 11
+btn_ok   = Pin(9,  Pin.IN, Pin.PULL_UP)  # Physical Pin 12
+
+# --- Buzzer (passive - needs PWM) ---
+buzzer = PWM(Pin(16))  # GP16, Physical Pin 21
+buzzer.duty_u16(0)
+
+def buzz_off():
+    buzzer.duty_u16(0)
+
+# --- Alarm storage ---
+alarm_hour    = 7
+alarm_min     = 0
+alarm_on      = False
+alarm_ringing = False
+buzz_counter  = 0
+
+def wait_for_release(btn):
+    while not btn.value():
+        utime.sleep_ms(10)
+
+def connect_wifi():
+    lcd.clear()
+    lcd.putstr("Connecting WiFi")
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+    attempts = 0
+    while not wlan.isconnected():
+        utime.sleep(1)
+        attempts += 1
+        if attempts > 15:
+            lcd.clear()
+            lcd.putstr("WiFi Failed!")
+            utime.sleep(2)
+            return False
+    lcd.clear()
+    lcd.putstr("WiFi Connected!")
+    utime.sleep(1)
+    return True
+
+def sync_time():
+    try:
+        ntptime.settime()
+        lcd.clear()
+        lcd.putstr("Time Synced!")
+        utime.sleep(1)
+        return True
+    except:
+        lcd.clear()
+        lcd.putstr("NTP Failed!")
+        utime.sleep(2)
+        return False
+
+def get_local_time():
+    t = utime.localtime(utime.time() + UTC_OFFSET)
+    return t
+
+def display_clock():
+    t = get_local_time()
+    h, m, s = t[3], t[4], t[5]
+    line1 = "Time: {:02d}:{:02d}:{:02d}".format(h, m, s)
+    line2 = "Alm: {:02d}:{:02d} {}".format(alarm_hour, alarm_min, "ON " if alarm_on else "OFF")
+    lcd.move_to(0, 0)
+    lcd.putstr(line1)
+    lcd.move_to(0, 1)
+    lcd.putstr(line2)
+
+def check_alarm():
+    global alarm_ringing
+    if not alarm_on:
+        return
+    t = get_local_time()
+    if t[3] == alarm_hour and t[4] == alarm_min and t[5] < 30:
+        if not alarm_ringing:
+            alarm_ringing = True
+    else:
+        if alarm_ringing:
+            alarm_ringing = False
+            buzz_off()
+
+def update_buzzer():
+    global buzz_counter
+    if not alarm_ringing:
+        buzzer.duty_u16(0)
+        return
+    buzz_counter += 1
+    # On for 6 ticks (300ms), off for 4 ticks (200ms), repeat
+    tick = buzz_counter % 10
+    if tick < 6:
+        buzzer.freq(4000)
+        buzzer.duty_u16(32768)
+    else:
+        buzzer.duty_u16(0)
+
+def set_alarm_menu():
+    global alarm_hour, alarm_min, alarm_on
+
+    # --- Set Hour ---
+    lcd.clear()
+    lcd.putstr("Set Alarm Hour")
+    h = alarm_hour
+    lcd.move_to(0, 1)
+    lcd.putstr("Hour: {:02d}  ".format(h))
+    while True:
+        if not btn_up.value():
+            h = (h + 1) % 24
+            lcd.move_to(0, 1)
+            lcd.putstr("Hour: {:02d}  ".format(h))
+            wait_for_release(btn_up)
+        if not btn_down.value():
+            h = (h - 1) % 24
+            lcd.move_to(0, 1)
+            lcd.putstr("Hour: {:02d}  ".format(h))
+            wait_for_release(btn_down)
+        if not btn_ok.value():
+            alarm_hour = h
+            wait_for_release(btn_ok)
+            break
+        utime.sleep_ms(50)
+
+    # --- Set Minute ---
+    lcd.clear()
+    lcd.putstr("Set Alarm Min")
+    m = alarm_min
+    lcd.move_to(0, 1)
+    lcd.putstr("Min:  {:02d}  ".format(m))
+    while True:
+        if not btn_up.value():
+            m = (m + 1) % 60
+            lcd.move_to(0, 1)
+            lcd.putstr("Min:  {:02d}  ".format(m))
+            wait_for_release(btn_up)
+        if not btn_down.value():
+            m = (m - 1) % 60
+            lcd.move_to(0, 1)
+            lcd.putstr("Min:  {:02d}  ".format(m))
+            wait_for_release(btn_down)
+        if not btn_ok.value():
+            alarm_min = m
+            wait_for_release(btn_ok)
+            break
+        utime.sleep_ms(50)
+
+    alarm_on = True
+    lcd.clear()
+    lcd.putstr("Alarm Set!")
+    utime.sleep(1)
+
+def toggle_alarm():
+    global alarm_on
+    alarm_on = not alarm_on
+    lcd.clear()
+    lcd.putstr("Alarm " + ("ON" if alarm_on else "OFF"))
+    utime.sleep(1)
+
+# --- Startup ---
+if connect_wifi():
+    sync_time()
+
+# --- Main Loop ---
+resync_counter = 0
+while True:
+    display_clock()
+    check_alarm()
+    update_buzzer()
+
+    # Resync every ~6 hours
+    resync_counter += 1
+    if resync_counter >= 108000:
+        sync_time()
+        resync_counter = 0
+
+    # Mode button — enter alarm set menu
+    if not btn_mode.value():
+        utime.sleep_ms(50)
+        if not btn_mode.value():
+            wait_for_release(btn_mode)
+            set_alarm_menu()
+
+    # Up button — toggle alarm on/off from main screen
+    if not btn_up.value():
+        utime.sleep_ms(50)
+        if not btn_up.value():
+            wait_for_release(btn_up)
+            toggle_alarm()
+
+    # OK button — dismiss alarm if ringing
+    if alarm_ringing and not btn_ok.value():
+        utime.sleep_ms(50)
+        if not btn_ok.value():
+            buzz_off()
+            alarm_ringing = False
+            wait_for_release(btn_ok)
+
+    utime.sleep_ms(50)
