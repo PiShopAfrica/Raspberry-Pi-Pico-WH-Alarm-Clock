@@ -49,3 +49,5 @@ components available from [PiShop Africa](https://www.pishop.co.za).
 All buttons use the Pico W's internal pull-up resistors — no external resistors needed.
 
 Check out our Blog here for installation instructions and circuit setup process:
+
+https://blog.pishop.co.za/how-to-build-a-wifi-alarm-clock-with-a-raspberry-pi-pico-w/
